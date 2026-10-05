@@ -1,9 +1,9 @@
 name: scan-ballerina action tests
 
 # Runs the shared scan-ballerina action against the packages under test-cases/,
-# one parallel job per case. The scan step is allowed to fail; each job then
-# checks that the action passed or failed as expected, so a green job means the
-# action behaved correctly, including when it was supposed to fail.
+# one parallel job per case. Each job uploads its SARIF to GitHub code scanning
+# under its own category and fails when the case has findings at or above its
+# fail-on severity.
 
 on:
   push:
@@ -14,6 +14,9 @@ on:
 
 permissions:
   contents: read
+  # Needed by the SARIF upload. Private repositories also need GitHub Code
+  # Security; without it the upload step fails but the action carries on.
+  security-events: write
 
 env:
   BALLERINA_VERSION: 2201.13.3
@@ -27,45 +30,40 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Fails on any finding, so passing proves there are none.
-          - name: zero issues passes
+          # No findings: passes.
+          - name: clean
+            category: bal-scan-clean
             paths: test-cases/clean
             fail-on: low
             exclude-tests: 'true'
-            expect: success
-            expect-counts: 0 0 0
 
-          # 2 high, 1 medium, 2 low.
-          - name: multiple issues fails high gate
+          # 2 high, 1 medium, 2 low: fails the high gate.
+          - name: multiple issues
+            category: bal-scan-multiple-issues
             paths: test-cases/multiple-issues
             fail-on: high
             exclude-tests: 'true'
-            expect: failure
 
-          # 2 low findings, all under tests/. Fails on any finding, so passing
-          # proves the test findings were dropped.
-          - name: test-only issues pass when tests are excluded
+          # 2 low findings, all under tests/: passes because they are dropped.
+          - name: test-only issues, tests excluded
+            category: bal-scan-test-only-issues-excluded
             paths: test-cases/test-only-issues
             fail-on: low
             exclude-tests: 'true'
-            expect: success
-            expect-counts: 0 0 0
 
-          # Control for the case above: the same package fails when test
-          # findings are kept, so the fixture really has findings to drop.
-          - name: test-only issues fail when tests are included
+          # Same package with the test findings kept: fails the low gate.
+          - name: test-only issues, tests included
+            category: bal-scan-test-only-issues-included
             paths: test-cases/test-only-issues
             fail-on: low
             exclude-tests: 'false'
-            expect: failure
 
-          # 1 medium, 1 low, no high: the default high gate would pass, the
-          # custom medium gate fails.
-          - name: custom severity fails medium gate
+          # 1 medium, 1 low, no high: fails the custom medium gate.
+          - name: custom severity
+            category: bal-scan-custom-severity
             paths: test-cases/custom-severity
             fail-on: medium
             exclude-tests: 'true'
-            expect: failure
 
     steps:
       - name: Checkout code
@@ -77,32 +75,10 @@ jobs:
           version: ${{ env.BALLERINA_VERSION }}
 
       - name: Scan
-        id: scan
-        continue-on-error: true
         uses: ballerina-platform/ballerina-library/.github/actions/scan-ballerina@main
         with:
           paths: ${{ matrix.paths }}
+          # Code scanning keeps one run per category, so each case gets its own.
+          category: ${{ matrix.category }}
           fail-on-severity: ${{ matrix.fail-on }}
           exclude-tests: ${{ matrix.exclude-tests }}
-          # Test results stay out of the Security tab.
-          upload: 'false'
-
-      - name: Check result
-        env:
-          EXPECT: ${{ matrix.expect }}
-          OUTCOME: ${{ steps.scan.outcome }}
-          EXPECT_COUNTS: ${{ matrix.expect-counts }}
-          COUNTS: ${{ steps.scan.outputs.high-count }} ${{ steps.scan.outputs.medium-count }} ${{ steps.scan.outputs.low-count }}
-        run: |
-          echo "outcome: expected $EXPECT, got $OUTCOME"
-          echo "high medium low: $COUNTS"
-          STATUS=0
-          if [ "$OUTCOME" != "$EXPECT" ]; then
-            echo "::error::expected the scan to end in $EXPECT, got $OUTCOME"
-            STATUS=1
-          fi
-          if [ -n "$EXPECT_COUNTS" ] && [ "$COUNTS" != "$EXPECT_COUNTS" ]; then
-            echo "::error::expected high medium low counts '$EXPECT_COUNTS', got '$COUNTS'"
-            STATUS=1
-          fi
-          exit $STATUS

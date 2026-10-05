@@ -29,33 +29,27 @@ test-cases/
 Checked locally with Ballerina 2201.13.5 and scan tool 0.12.0. Both pipelines
 run one parallel job per row.
 
-| Case | Flags | Findings (high / medium / low) | Expected gate |
+| Case | Flags | Findings (high / medium / low) | Job |
 | --- | --- | --- | --- |
-| `clean` | fail on `low` | 0 / 0 / 0 | pass |
-| `multiple-issues` | fail on `high` | 2 / 1 / 2 | fail |
-| `test-only-issues` | fail on `low`, exclude tests | 0 / 0 / 0 | pass |
-| `test-only-issues` | fail on `low`, keep tests | 0 / 0 / 2 | fail |
-| `custom-severity` | fail on `medium` | 0 / 1 / 1 | fail |
+| `clean` | fail on `low` | 0 / 0 / 0 | passes |
+| `multiple-issues` | fail on `high` | 2 / 1 / 2 | fails |
+| `test-only-issues` | fail on `low`, exclude tests | 0 / 0 / 0 | passes |
+| `test-only-issues` | fail on `low`, keep tests | 0 / 0 / 2 | fails |
+| `custom-severity` | fail on `medium` | 0 / 1 / 1 | fails |
 
-Gating on `low` fails on any finding, so a pass there proves nothing was left.
-For `test-only-issues`, that means the test findings were dropped. The
-keep-tests row checks that those findings are really there when they aren't
-dropped. `custom-severity` has no high findings, so only the custom `medium`
-gate fails it.
-
-A job is green when the gate passes or fails as expected. It is red only when
-the scan behaves differently.
+The jobs aren't wrapped in assertions: a case with findings at or above its
+gate fails its job, the same way it would in a real pipeline.
 
 ## GitHub Actions
 
 1. `setup-ballerina@v1.1.4` installs Ballerina 2201.13.3 on the runner.
-2. `scan-ballerina@main` scans the case's package with its flags. The step has
-   `continue-on-error: true`, so an expected failure doesn't stop the job.
-3. A check step compares the step's outcome with the expected one. For the
-   passing cases it also checks that all counts are 0.
+2. `scan-ballerina@main` scans the case's package with its flags, uploads the
+   SARIF to **Security → Code scanning** and then fails the job if the gate is
+   hit. Each case uploads under its own category (`bal-scan-<case>`), because
+   code scanning keeps one run per category.
 
-The test runs set `upload: 'false'`, so fixture findings stay out of
-**Security → Code scanning**.
+The upload needs `security-events: write`; private repositories also need
+GitHub Code Security.
 
 ## GitLab CI/CD
 
@@ -66,8 +60,8 @@ and repeats the action's steps in shell:
   scan tool 0.12.0 from dev Central, the version the GitHub action picks
 - runs `bal scan --format=sarif` and, when `EXCLUDE_TESTS` is `true`, drops
   findings under `tests/` and `modules/*/tests/` with `jq`
-- counts findings by level, gates on `FAIL_ON_SEVERITY`, and checks both the
-  gate result and the counts
+- counts findings by level and fails the job when any are at or above
+  `FAIL_ON_SEVERITY`
 - keeps the SARIF files as artifacts
 
 The Ballerina guide caches `~/.ballerina/`. GitLab only caches paths inside the

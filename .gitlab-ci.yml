@@ -2,9 +2,9 @@
 # https://ballerina.io/learn/cicd/#gitlab-cicd-for-ballerina. GitLab cannot run
 # the GitHub scan-ballerina action, so the job repeats its steps in shell: pull
 # the tool, run bal scan, drop test findings, count findings by level and gate
-# on FAIL_ON_SEVERITY. parallel:matrix runs one job per case under test-cases/,
-# and each job checks that the gate passed or failed as expected and that the
-# counts match, so a green job means the scan behaved correctly.
+# on FAIL_ON_SEVERITY. parallel:matrix runs one job per case under test-cases/;
+# a job fails when its case has findings at or above FAIL_ON_SEVERITY, and the
+# SARIF report is kept as an artifact either way.
 
 stages:
   - scan
@@ -29,35 +29,26 @@ bal-scan:
   stage: scan
   parallel:
     matrix:
-      # Fails on any finding, so passing proves there are none.
+      # No findings: passes.
       - CASE: clean
         FAIL_ON_SEVERITY: low
         EXCLUDE_TESTS: "true"
-        EXPECT: pass
-        EXPECT_COUNTS: "0 0 0"
+      # 2 high, 1 medium, 2 low: fails the high gate.
       - CASE: multiple-issues
         FAIL_ON_SEVERITY: high
         EXCLUDE_TESTS: "true"
-        EXPECT: fail
-        EXPECT_COUNTS: "2 1 2"
-      # All findings are under tests/; passing proves they were dropped.
+      # 2 low findings, all under tests/: passes because they are dropped.
       - CASE: test-only-issues
         FAIL_ON_SEVERITY: low
         EXCLUDE_TESTS: "true"
-        EXPECT: pass
-        EXPECT_COUNTS: "0 0 0"
-      # Control for the case above: the test findings are there when kept.
+      # Same package with the test findings kept: fails the low gate.
       - CASE: test-only-issues
         FAIL_ON_SEVERITY: low
         EXCLUDE_TESTS: "false"
-        EXPECT: fail
-        EXPECT_COUNTS: "0 0 2"
-      # No high findings, so only the custom medium gate fails it.
+      # 1 medium, 1 low, no high: fails the custom medium gate.
       - CASE: custom-severity
         FAIL_ON_SEVERITY: medium
         EXCLUDE_TESTS: "true"
-        EXPECT: fail
-        EXPECT_COUNTS: "0 1 1"
   script:
     - cd "test-cases/$CASE"
     # A failed scan shows up as a missing report below.
@@ -75,7 +66,7 @@ bal-scan:
     - |
       count() { jq --arg l "$1" '[.runs[0].results[] | select(.level == $l)] | length' "$SARIF"; }
       HIGH=$(count error); MEDIUM=$(count warning); LOW=$(count note)
-      COUNTS="$HIGH $MEDIUM $LOW"
+      echo "bal scan '$CASE': $HIGH high, $MEDIUM medium, $LOW low severity finding(s)"
       case "$FAIL_ON_SEVERITY" in
         none) FAILING=0 ;;
         high) FAILING=$HIGH ;;
@@ -83,19 +74,10 @@ bal-scan:
         low) FAILING=$((HIGH + MEDIUM + LOW)) ;;
         *) echo "FAIL_ON_SEVERITY must be none, low, medium or high"; exit 1 ;;
       esac
-      if [ "$FAILING" -gt 0 ]; then RESULT=fail; else RESULT=pass; fi
-      echo "bal scan '$CASE': $HIGH high, $MEDIUM medium, $LOW low severity finding(s)"
-      echo "gate on $FAIL_ON_SEVERITY: expected $EXPECT, got $RESULT"
-      STATUS=0
-      if [ "$RESULT" != "$EXPECT" ]; then
-        echo "ERROR: expected the $FAIL_ON_SEVERITY gate to $EXPECT, got $RESULT"
-        STATUS=1
+      if [ "$FAILING" -gt 0 ]; then
+        echo "ERROR: bal scan found $FAILING finding(s) at or above $FAIL_ON_SEVERITY severity"
+        exit 1
       fi
-      if [ "$COUNTS" != "$EXPECT_COUNTS" ]; then
-        echo "ERROR: expected high medium low counts '$EXPECT_COUNTS', got '$COUNTS'"
-        STATUS=1
-      fi
-      exit $STATUS
   artifacts:
     when: always
     paths:
