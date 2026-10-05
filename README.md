@@ -1,69 +1,74 @@
-# bal scan CI/CD demo
+# bal scan CI/CD tests
 
-A small Ballerina package with deliberate static-analysis issues, plus CI
-pipelines that run `bal scan` on it:
+Small Ballerina packages with known `bal scan` findings, plus CI pipelines that
+scan each one with different flags and check the result:
 
-- **GitHub Actions** (`.github/workflows/ballerina-scan.yml`) uses
+- **GitHub Actions** (`.github/workflows/scan-action-tests.yml`) uses
   [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) and
-  the shared
+  tests the shared
   [`scan-ballerina`](https://github.com/ballerina-platform/ballerina-library/tree/main/.github/actions/scan-ballerina)
   action.
 - **GitLab CI/CD** (`.gitlab-ci.yml`) follows
   [the Ballerina GitLab guide](https://ballerina.io/learn/cicd/#gitlab-cicd-for-ballerina)
-  and adds a scan stage.
+  and repeats the action's steps in shell.
 
 ## Layout
 
 ```
-ballerina/                  the package (scan-ballerina's default `paths` value)
-  main.bal                  ballerina:1, :2, :3, :10, :12   (code smells)
-  service.bal               ballerina/http:1, :2, :4
-  security.bal              ballerina:13, ballerina/crypto:1, :2, os:1, log:1
-.github/workflows/ballerina-scan.yml
+test-cases/
+  clean/                    no findings
+  multiple-issues/          ballerina:13, os:1, crypto:1, ballerina:1, :3
+  test-only-issues/         ballerina:1, :10, all under tests/
+  custom-severity/          crypto:1, ballerina:1
+.github/workflows/scan-action-tests.yml
 .gitlab-ci.yml
 ```
 
-## Expected findings
+## Test cases
 
-Checked locally with Ballerina 2201.13.5 and scan tool 0.12.0: **17 findings**.
+Checked locally with Ballerina 2201.13.5 and scan tool 0.12.0. Both pipelines
+run one parallel job per row.
 
-| Severity | SARIF level | Count | Rules |
+| Case | Flags | Findings (high / medium / low) | Expected gate |
 | --- | --- | --- | --- |
-| High | `error` | 2 | `ballerina:13` (hardcoded secret), `ballerina/os:1` |
-| Medium | `warning` | 6 | `crypto:1`, `crypto:2`, `log:1`, `http:1`, `http:2`, `http:4` |
-| Low | `note` | 9 | `ballerina:1`, `:2`, `:3` (×5), `:10`, `:12` |
+| `clean` | fail on `low` | 0 / 0 / 0 | pass |
+| `multiple-issues` | fail on `high` | 2 / 1 / 2 | fail |
+| `test-only-issues` | fail on `low`, exclude tests | 0 / 0 / 0 | pass |
+| `test-only-issues` | fail on `low`, keep tests | 0 / 0 / 2 | fail |
+| `custom-severity` | fail on `medium` | 0 / 1 / 1 | fail |
 
-Both pipelines gate on **high** by default. The package has 2 high findings,
-so **the scan job is expected to fail**. That shows the gate is working.
+Gating on `low` fails on any finding, so a pass there proves nothing was left.
+For `test-only-issues`, that means the test findings were dropped. The
+keep-tests row checks that those findings are really there when they aren't
+dropped. `custom-severity` has no high findings, so only the custom `medium`
+gate fails it.
+
+A job is green when the gate passes or fails as expected. It is red only when
+the scan behaves differently.
 
 ## GitHub Actions
 
 1. `setup-ballerina@v1.1.4` installs Ballerina 2201.13.3 on the runner.
-2. `bal build` runs in `ballerina/`.
-3. `scan-ballerina@main` pulls the scan tool and runs `bal scan --format=sarif`.
-   It uploads the SARIF to **Security → Code scanning** (category `bal-scan`)
-   and fails the job based on `fail-on-severity`.
-4. The job writes a severity table to the job summary and keeps the SARIF as an
-   artifact.
+2. `scan-ballerina@main` scans the case's package with its flags. The step has
+   `continue-on-error: true`, so an expected failure doesn't stop the job.
+3. A check step compares the step's outcome with the expected one. For the
+   passing cases it also checks that all counts are 0.
 
-To use a different threshold, run the workflow manually (**Actions → Run
-workflow**) and choose `none`, `low`, `medium` or `high`.
-
-The SARIF upload needs `security-events: write`. On private repos it also needs
-GitHub Code Security. If that's missing, the upload step fails but the gate
-still runs.
+The test runs set `upload: 'false'`, so fixture findings stay out of
+**Security → Code scanning**.
 
 ## GitLab CI/CD
 
-GitLab can't use GitHub actions, so the `bal-scan` job repeats the action's
-steps in shell:
+GitLab can't use GitHub actions, so the `bal-scan` job uses `parallel:matrix`
+and repeats the action's steps in shell:
 
-- installs Ballerina from the `.deb` (as in the Ballerina guide), then runs
-  `bal tool pull scan` and `bal scan --format=sarif`
-- counts findings by level with `jq` and gates on the `FAIL_ON_SEVERITY` CI
-  variable
-- turns the SARIF into a GitLab **Code Quality** report, so findings show in the
-  merge request widget, and keeps the raw SARIF as an artifact
+- installs Ballerina from the `.deb` (as in the Ballerina guide), then pulls
+  scan tool 0.12.0 from dev Central, the version the GitHub action picks
+- runs `bal scan --format=sarif` and, when `EXCLUDE_TESTS` is `true`, drops
+  findings under `tests/` and `modules/*/tests/` with `jq`
+- counts findings by level, gates on `FAIL_ON_SEVERITY`, and checks both the
+  gate result and the counts
+- keeps the SARIF files as artifacts
 
 The Ballerina guide caches `~/.ballerina/`. GitLab only caches paths inside the
 project directory, so this pipeline leaves caching out.
@@ -71,8 +76,7 @@ project directory, so this pipeline leaves caching out.
 ## Run locally
 
 ```bash
-cd ballerina
+cd test-cases/multiple-issues
 bal tool pull scan
-bal build
 bal scan --format=sarif     # report: target/report/scan_results.sarif
 ```

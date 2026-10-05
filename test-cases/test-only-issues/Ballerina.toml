@@ -1,6 +1,6 @@
 [package]
 org = "wso2"
-name = "scan_ci_demo"
+name = "scan_case_test_only_issues"
 version = "0.1.0"
 distribution = "2201.13.3"
 

@@ -1,18 +1,18 @@
-# GitLab CI/CD for the same package, based on
-# https://ballerina.io/learn/cicd/#gitlab-cicd-for-ballerina with a scan stage
-# added. GitLab cannot run the GitHub scan-ballerina action, so the scan job
-# repeats its steps: pull the tool, run bal scan, count findings by level and
-# gate on FAIL_ON_SEVERITY. The SARIF is also converted to a GitLab Code Quality
-# report so findings show in the merge request widget.
+# GitLab CI/CD version of .github/workflows/scan-action-tests.yml, based on
+# https://ballerina.io/learn/cicd/#gitlab-cicd-for-ballerina. GitLab cannot run
+# the GitHub scan-ballerina action, so the job repeats its steps in shell: pull
+# the tool, run bal scan, drop test findings, count findings by level and gate
+# on FAIL_ON_SEVERITY. parallel:matrix runs one job per case under test-cases/,
+# and each job checks that the gate passed or failed as expected and that the
+# counts match, so a green job means the scan behaved correctly.
 
 stages:
-  - build
   - scan
 
 variables:
   BALLERINA_VERSION: "2201.13.3"
-  # none, low, medium or high (same meaning as the GitHub action input).
-  FAIL_ON_SEVERITY: "high"
+  # Same tool the GitHub action picks for 2201.13.2+; 0.12.0 is only on dev Central.
+  SCAN_TOOL_VERSION: "0.12.0"
 
 default:
   image: ubuntu:24.04
@@ -21,37 +21,61 @@ default:
     - curl -fsSL -o ballerina.deb https://dist.ballerina.io/downloads/$BALLERINA_VERSION/ballerina-$BALLERINA_VERSION-swan-lake-linux-x64.deb
     - dpkg -i ballerina.deb
     - bal version
-    - cd ballerina
-
-build:
-  stage: build
-  script:
-    - bal build
+    # The scan tool is not bundled with the distribution.
+    - BALLERINA_DEV_CENTRAL=true bal tool pull "scan:$SCAN_TOOL_VERSION"
+    - bal tool use "scan:$SCAN_TOOL_VERSION"
 
 bal-scan:
   stage: scan
+  parallel:
+    matrix:
+      # Fails on any finding, so passing proves there are none.
+      - CASE: clean
+        FAIL_ON_SEVERITY: low
+        EXCLUDE_TESTS: "true"
+        EXPECT: pass
+        EXPECT_COUNTS: "0 0 0"
+      - CASE: multiple-issues
+        FAIL_ON_SEVERITY: high
+        EXCLUDE_TESTS: "true"
+        EXPECT: fail
+        EXPECT_COUNTS: "2 1 2"
+      # All findings are under tests/; passing proves they were dropped.
+      - CASE: test-only-issues
+        FAIL_ON_SEVERITY: low
+        EXCLUDE_TESTS: "true"
+        EXPECT: pass
+        EXPECT_COUNTS: "0 0 0"
+      # Control for the case above: the test findings are there when kept.
+      - CASE: test-only-issues
+        FAIL_ON_SEVERITY: low
+        EXCLUDE_TESTS: "false"
+        EXPECT: fail
+        EXPECT_COUNTS: "0 0 2"
+      # No high findings, so only the custom medium gate fails it.
+      - CASE: custom-severity
+        FAIL_ON_SEVERITY: medium
+        EXCLUDE_TESTS: "true"
+        EXPECT: fail
+        EXPECT_COUNTS: "0 1 1"
   script:
-    # The scan tool is not bundled with the distribution.
-    - bal tool pull scan
-    - bal scan --format=sarif
+    - cd "test-cases/$CASE"
+    # A failed scan shows up as a missing report below.
+    - bal scan --format=sarif || true
     - SARIF=target/report/scan_results.sarif
     - test -f "$SARIF" || { echo "bal scan did not produce $SARIF"; exit 1; }
-    # bal scan levels: error = high, warning = medium, note = low.
     - |
-      jq '[.runs[0].results[] | {
-            description: .message.text,
-            check_name: .ruleId,
-            fingerprint: (.ruleId + ":" + .locations[0].physicalLocation.artifactLocation.uri + ":" + (.locations[0].physicalLocation.region.startLine | tostring)),
-            severity: ({"error": "critical", "warning": "major", "note": "minor"}[.level] // "info"),
-            location: {
-              path: ("ballerina/" + .locations[0].physicalLocation.artifactLocation.uri),
-              lines: {begin: .locations[0].physicalLocation.region.startLine}
-            }
-          }]' "$SARIF" > ../gl-code-quality-report.json
+      if [ "$EXCLUDE_TESTS" = "true" ]; then
+        jq '.runs[].results |= map(select(
+              (.locations[0].physicalLocation.artifactLocation.uri // "") | test("^(modules/[^/]+/)?tests/") | not))' \
+          "$SARIF" > target/report/scan_results_filtered.sarif
+        SARIF=target/report/scan_results_filtered.sarif
+      fi
+    # bal scan levels: error = high, warning = medium, note = low.
     - |
       count() { jq --arg l "$1" '[.runs[0].results[] | select(.level == $l)] | length' "$SARIF"; }
       HIGH=$(count error); MEDIUM=$(count warning); LOW=$(count note)
-      echo "bal scan: $HIGH high, $MEDIUM medium, $LOW low severity finding(s)"
+      COUNTS="$HIGH $MEDIUM $LOW"
       case "$FAIL_ON_SEVERITY" in
         none) FAILING=0 ;;
         high) FAILING=$HIGH ;;
@@ -59,13 +83,20 @@ bal-scan:
         low) FAILING=$((HIGH + MEDIUM + LOW)) ;;
         *) echo "FAIL_ON_SEVERITY must be none, low, medium or high"; exit 1 ;;
       esac
-      if [ "$FAILING" -gt 0 ]; then
-        echo "bal scan found $FAILING finding(s) at or above $FAIL_ON_SEVERITY severity"
-        exit 1
+      if [ "$FAILING" -gt 0 ]; then RESULT=fail; else RESULT=pass; fi
+      echo "bal scan '$CASE': $HIGH high, $MEDIUM medium, $LOW low severity finding(s)"
+      echo "gate on $FAIL_ON_SEVERITY: expected $EXPECT, got $RESULT"
+      STATUS=0
+      if [ "$RESULT" != "$EXPECT" ]; then
+        echo "ERROR: expected the $FAIL_ON_SEVERITY gate to $EXPECT, got $RESULT"
+        STATUS=1
       fi
+      if [ "$COUNTS" != "$EXPECT_COUNTS" ]; then
+        echo "ERROR: expected high medium low counts '$EXPECT_COUNTS', got '$COUNTS'"
+        STATUS=1
+      fi
+      exit $STATUS
   artifacts:
     when: always
     paths:
-      - ballerina/target/report/scan_results.sarif
-    reports:
-      codequality: gl-code-quality-report.json
+      - test-cases/$CASE/target/report/*.sarif
