@@ -75,6 +75,7 @@ jobs:
           version: ${{ env.BALLERINA_VERSION }}
 
       - name: Scan
+        id: scan
         uses: ballerina-platform/ballerina-library/.github/actions/scan-ballerina@main
         with:
           paths: ${{ matrix.paths }}
@@ -82,3 +83,11 @@ jobs:
           category: ${{ matrix.category }}
           fail-on-severity: ${{ matrix.fail-on }}
           exclude-tests: ${{ matrix.exclude-tests }}
+
+      # Kept even when the scan fails the job, so the findings can be inspected.
+      - name: Keep the SARIF report
+        if: always() && steps.scan.outputs.sarif-file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarif-${{ matrix.category }}
+          path: ${{ steps.scan.outputs.sarif-file }}

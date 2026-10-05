@@ -47,6 +47,8 @@ gate fails its job, the same way it would in a real pipeline.
    SARIF to **Security → Code scanning** and then fails the job if the gate is
    hit. Each case uploads under its own category (`bal-scan-<case>`), because
    code scanning keeps one run per category.
+3. The SARIF is also kept as a run artifact (`sarif-bal-scan-<case>`), listed
+   at the bottom of the run's **Summary** page, even when the job fails.
 
 The upload needs `security-events: write`; private repositories also need
 GitHub Code Security.
