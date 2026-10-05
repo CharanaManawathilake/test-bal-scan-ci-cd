@@ -1,0 +1,71 @@
+# GitLab CI/CD for the same package, based on
+# https://ballerina.io/learn/cicd/#gitlab-cicd-for-ballerina with a scan stage
+# added. GitLab cannot run the GitHub scan-ballerina action, so the scan job
+# repeats its steps: pull the tool, run bal scan, count findings by level and
+# gate on FAIL_ON_SEVERITY. The SARIF is also converted to a GitLab Code Quality
+# report so findings show in the merge request widget.
+
+stages:
+  - build
+  - scan
+
+variables:
+  BALLERINA_VERSION: "2201.13.3"
+  # none, low, medium or high (same meaning as the GitHub action input).
+  FAIL_ON_SEVERITY: "high"
+
+default:
+  image: ubuntu:24.04
+  before_script:
+    - apt-get update && apt-get install -y curl jq
+    - curl -fsSL -o ballerina.deb https://dist.ballerina.io/downloads/$BALLERINA_VERSION/ballerina-$BALLERINA_VERSION-swan-lake-linux-x64.deb
+    - dpkg -i ballerina.deb
+    - bal version
+    - cd ballerina
+
+build:
+  stage: build
+  script:
+    - bal build
+
+bal-scan:
+  stage: scan
+  script:
+    # The scan tool is not bundled with the distribution.
+    - bal tool pull scan
+    - bal scan --format=sarif
+    - SARIF=target/report/scan_results.sarif
+    - test -f "$SARIF" || { echo "bal scan did not produce $SARIF"; exit 1; }
+    # bal scan levels: error = high, warning = medium, note = low.
+    - |
+      jq '[.runs[0].results[] | {
+            description: .message.text,
+            check_name: .ruleId,
+            fingerprint: (.ruleId + ":" + .locations[0].physicalLocation.artifactLocation.uri + ":" + (.locations[0].physicalLocation.region.startLine | tostring)),
+            severity: ({"error": "critical", "warning": "major", "note": "minor"}[.level] // "info"),
+            location: {
+              path: ("ballerina/" + .locations[0].physicalLocation.artifactLocation.uri),
+              lines: {begin: .locations[0].physicalLocation.region.startLine}
+            }
+          }]' "$SARIF" > ../gl-code-quality-report.json
+    - |
+      count() { jq --arg l "$1" '[.runs[0].results[] | select(.level == $l)] | length' "$SARIF"; }
+      HIGH=$(count error); MEDIUM=$(count warning); LOW=$(count note)
+      echo "bal scan: $HIGH high, $MEDIUM medium, $LOW low severity finding(s)"
+      case "$FAIL_ON_SEVERITY" in
+        none) FAILING=0 ;;
+        high) FAILING=$HIGH ;;
+        medium) FAILING=$((HIGH + MEDIUM)) ;;
+        low) FAILING=$((HIGH + MEDIUM + LOW)) ;;
+        *) echo "FAIL_ON_SEVERITY must be none, low, medium or high"; exit 1 ;;
+      esac
+      if [ "$FAILING" -gt 0 ]; then
+        echo "bal scan found $FAILING finding(s) at or above $FAIL_ON_SEVERITY severity"
+        exit 1
+      fi
+  artifacts:
+    when: always
+    paths:
+      - ballerina/target/report/scan_results.sarif
+    reports:
+      codequality: gl-code-quality-report.json
