@@ -6,7 +6,7 @@ import ballerina/test;
 // ballerina:10 (low) - Self assignment.
 @test:Config {}
 function testGreeting() {
-    int count = checkpanic int:fromString("1");
-    count = count;
+    int attempts = checkpanic int:fromString("3");
+    attempts = attempts;
     test:assertEquals(greeting(), "hello");
 }

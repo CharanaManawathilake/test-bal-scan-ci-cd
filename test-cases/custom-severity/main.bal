@@ -4,11 +4,11 @@
 import ballerina/crypto;
 
 // ballerina/crypto:1 (medium) - Insecure cipher mode (AES-ECB).
-public isolated function encrypt(byte[] data, byte[16] key) returns byte[]|error {
-    return crypto:encryptAesEcb(data, key);
+public isolated function seal(byte[] plain, byte[16] secret) returns byte[]|error {
+    return crypto:encryptAesEcb(plain, secret);
 }
 
 // ballerina:1 (low) - Avoid checkpanic.
-public isolated function loadLimit() returns int {
-    return checkpanic int:fromString("42");
+public isolated function maxRetries() returns int {
+    return checkpanic int:fromString("5");
 }
