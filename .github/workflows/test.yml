@@ -1,9 +1,10 @@
 name: Test
 
 # Runs this repository's action (uses: ./) against the packages under
-# test-cases/, one parallel job per case. The scan step may fail the gate, so it
-# runs with continue-on-error and a check step compares its outputs and outcome
-# with what the case expects. A job fails only when the action misbehaves.
+# test-cases/, one parallel job per case. Nothing is asserted: when a case's
+# gate fails, its job fails, so the error, annotations and job summary can be
+# checked on the run page exactly as a user would see them. The comment above
+# each case says what it should show.
 
 on:
   push:
@@ -34,53 +35,54 @@ jobs:
       # Run every case even when one of them fails.
       fail-fast: false
       matrix:
-        # expect: result high medium low packages-scanned missing-report
+        # Expected: result; high/medium/low counts; packages scanned; missing report
         include:
+          # passed; 0/0/0; 1 package; no missing report
           - name: clean
             paths: test-cases/clean
             fail-on: low
-            expect: passed 0 0 0 1 false
 
+          # failed; 2/1/2; 1 package; no missing report; annotations shown
           - name: multiple issues, high gate, annotations
             paths: test-cases/multiple-issues
             fail-on: high
             annotations: 'true'
-            expect: failed 2 1 2 1 false
 
+          # passed; 2/1/2; 1 package; no missing report
           - name: multiple issues, 2 high findings allowed
             paths: test-cases/multiple-issues
             fail-on: high
             max-findings: '2'
-            expect: passed 2 1 2 1 false
 
+          # passed; 0/1/2; 1 package; no missing report
           - name: multiple issues, high rules excluded with scan-args
             paths: test-cases/multiple-issues
             fail-on: high
             scan-args: --exclude-rules=ballerina:13,ballerina/os:1
-            expect: passed 0 1 2 1 false
 
+          # passed; 0/0/0; 1 package; no missing report
           - name: test-only issues, tests excluded
             paths: test-cases/test-only-issues
             fail-on: low
-            expect: passed 0 0 0 1 false
 
+          # failed; 0/0/2; 1 package; no missing report
           - name: test-only issues, tests included
             paths: test-cases/test-only-issues
             fail-on: low
             exclude-tests: 'false'
-            expect: failed 0 0 2 1 false
 
+          # failed; 0/1/1; 1 package; no missing report
           - name: custom severity, medium gate
             paths: test-cases/custom-severity
             fail-on: medium
-            expect: failed 0 1 1 1 false
 
+          # passed; 0/1/1; 1 package; no missing report
           - name: custom severity, high gate
             paths: test-cases/custom-severity
             fail-on: high
-            expect: passed 0 1 1 1 false
 
           # Finds every package, then drops two of them by glob.
+          # passed; 0/1/3; 3 packages; no missing report
           - name: all cases, excluded paths
             paths: test-cases
             exclude-paths: |
@@ -88,30 +90,29 @@ jobs:
               test-cases/brok*
             exclude-tests: 'false'
             fail-on: none
-            expect: passed 0 1 3 3 false
 
+          # failed; 0/0/0; 2 packages; missing report
           - name: package that does not compile
             paths: test-cases/broken, test-cases/clean
             fail-on: none
-            expect: failed 0 0 0 2 true
 
+          # passed; 0/0/0; 1 package; missing report
           - name: package that does not compile, missing report allowed
             paths: test-cases/broken
             fail-on: none
             fail-on-missing-report: 'false'
-            expect: passed 0 0 0 1 true
 
+          # skipped; 0/0/0; 0 packages; no missing report
           - name: no packages
             paths: does-not-exist
             fail-on: low
-            expect: skipped 0 0 0 0 false
 
           # Ballerina installed by an earlier step instead of the action.
+          # passed; 0/0/0; 1 package; no missing report
           - name: preinstalled Ballerina
             paths: test-cases/clean
             fail-on: low
             preinstalled: true
-            expect: passed 0 0 0 1 false
 
     steps:
       - name: Checkout code
@@ -132,7 +133,6 @@ jobs:
 
       - name: Scan
         id: scan
-        continue-on-error: true
         uses: ./
         with:
           setup-ballerina: ${{ matrix.preinstalled && 'false' || 'true' }}
@@ -147,35 +147,7 @@ jobs:
           annotations: ${{ matrix.annotations || 'false' }}
           category: ${{ steps.category.outputs.value }}
 
-      - name: Check the result
-        env:
-          EXPECT: ${{ matrix.expect }}
-          OUTCOME: ${{ steps.scan.outcome }}
-          ACTUAL: >-
-            ${{ steps.scan.outputs.result }}
-            ${{ steps.scan.outputs.high-count }}
-            ${{ steps.scan.outputs.medium-count }}
-            ${{ steps.scan.outputs.low-count }}
-            ${{ steps.scan.outputs.packages-scanned }}
-            ${{ steps.scan.outputs.missing-report }}
-        run: |
-          echo "expected: $EXPECT"
-          echo "actual:   $ACTUAL (step $OUTCOME)"
-          STATUS=0
-          if [ "$ACTUAL" != "$EXPECT" ]; then
-            echo "::error::Expected '$EXPECT', got '$ACTUAL'"
-            STATUS=1
-          fi
-          # The step fails exactly when the gate fails.
-          WANTED=success
-          [ "${EXPECT%% *}" = "failed" ] && WANTED=failure
-          if [ "$OUTCOME" != "$WANTED" ]; then
-            echo "::error::Expected the scan step to end in $WANTED, got $OUTCOME"
-            STATUS=1
-          fi
-          exit $STATUS
-
-      # Kept even when the job fails, so the findings can be inspected.
+      # Kept when the scan fails the job, so the findings can be inspected.
       - name: Keep the SARIF report
         if: always() && steps.scan.outputs.sarif-file != ''
         uses: actions/upload-artifact@v4
