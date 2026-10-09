@@ -23,6 +23,8 @@ permissions:
   # Needed by the SARIF upload. Private repositories also need GitHub Code
   # Security; without it the upload step fails but the action carries on.
   security-events: write
+  # Needed by only-new-issues to list the files a pull request changes.
+  pull-requests: read
 
 env:
   BALLERINA_VERSION: ${{ inputs.balVersion || '2201.13.3' }}
@@ -114,6 +116,90 @@ jobs:
             fail-on: low
             preinstalled: true
 
+          # Error: bal was not found, set setup-ballerina to true. No outputs.
+          - name: setup-ballerina off without Ballerina
+            paths: test-cases/clean
+            fail-on: low
+            setup-ballerina: 'false'
+
+          # The log shows the latest Ballerina distribution in "Using bal scan".
+          # passed; 0/0/0; 1 package; no missing report
+          - name: latest Ballerina version
+            paths: test-cases/clean
+            fail-on: low
+            ballerina-version: latest
+
+          # The log shows "Using bal scan 0.11.0".
+          # passed; 0/0/0; 1 package; no missing report
+          - name: pinned tool version
+            paths: test-cases/clean
+            fail-on: low
+            tool-version: 0.11.0
+
+          # Newline separated paths; the repeated path is scanned once.
+          # failed; 0/1/1; 2 packages; no missing report
+          - name: paths on separate lines, one repeated
+            paths: |
+              test-cases/clean
+              test-cases/custom-severity
+              test-cases/clean
+            fail-on: medium
+
+          # A file glob drops the findings in main.bal but still scans the package.
+          # passed; 0/0/0; 1 package; no missing report
+          - name: excluded file glob
+            paths: test-cases/multiple-issues
+            exclude-paths: '**/main.bal'
+            fail-on: low
+
+          # Only the checkpanic rule runs.
+          # failed; 0/0/1; 1 package; no missing report
+          - name: multiple issues, one rule included with scan-args
+            paths: test-cases/multiple-issues
+            fail-on: low
+            scan-args: --include-rules=ballerina:1
+
+          # Error: scan-args cannot set --format=json. No outputs.
+          - name: scan-args that set the format
+            paths: test-cases/multiple-issues
+            fail-on: low
+            scan-args: --format=json
+
+          # Medium and low findings count towards a low gate.
+          # failed; 2/1/2; 1 package; no missing report
+          - name: multiple issues, low gate
+            paths: test-cases/multiple-issues
+            fail-on: low
+
+          # Error: fail-on-severity must be none, low, medium or high. No outputs.
+          - name: invalid fail-on-severity
+            paths: test-cases/clean
+            fail-on: critical
+
+          # On push and schedule: a notice that only-new-issues applies to pull
+          # requests, then failed; 2/1/2. On a pull request that does not touch
+          # test-cases/multiple-issues: passed; 0/0/0, and the log and summary say
+          # 5 findings are not counted.
+          - name: multiple issues, only new issues
+            paths: test-cases/multiple-issues
+            fail-on: high
+            only-new-issues: 'true'
+
+          # The upload-sarif step is skipped and sarif-id is empty; the SARIF artifact
+          # is still kept.
+          # passed; 2/1/2; 1 package; no missing report
+          - name: multiple issues, upload off
+            paths: test-cases/multiple-issues
+            fail-on: none
+            upload: 'false'
+
+          # Fails as usual, but the job summary has no bal scan section.
+          # failed; 2/1/2; 1 package; no missing report
+          - name: multiple issues, job summary off
+            paths: test-cases/multiple-issues
+            fail-on: high
+            job-summary: 'false'
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -135,8 +221,9 @@ jobs:
         id: scan
         uses: ./
         with:
-          setup-ballerina: ${{ matrix.preinstalled && 'false' || 'true' }}
-          ballerina-version: ${{ env.BALLERINA_VERSION }}
+          setup-ballerina: ${{ matrix.setup-ballerina || (matrix.preinstalled && 'false' || 'true') }}
+          ballerina-version: ${{ matrix.ballerina-version || env.BALLERINA_VERSION }}
+          tool-version: ${{ matrix.tool-version }}
           paths: ${{ matrix.paths }}
           exclude-paths: ${{ matrix.exclude-paths }}
           exclude-tests: ${{ matrix.exclude-tests || 'true' }}
@@ -145,7 +232,34 @@ jobs:
           max-findings: ${{ matrix.max-findings || '0' }}
           fail-on-missing-report: ${{ matrix.fail-on-missing-report || 'true' }}
           annotations: ${{ matrix.annotations || 'false' }}
+          only-new-issues: ${{ matrix.only-new-issues || 'false' }}
+          upload: ${{ matrix.upload || 'true' }}
+          job-summary: ${{ matrix.job-summary || 'true' }}
           category: ${{ steps.category.outputs.value }}
+
+      # Printed for viewing only; nothing is compared.
+      - name: Show the outputs
+        if: always()
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          HIGH: ${{ steps.scan.outputs.high-count }}
+          MEDIUM: ${{ steps.scan.outputs.medium-count }}
+          LOW: ${{ steps.scan.outputs.low-count }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+          MISSING: ${{ steps.scan.outputs.missing-report }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          SARIF_ID: ${{ steps.scan.outputs.sarif-id }}
+        run: |
+          echo "result:           $RESULT"
+          echo "high-count:       $HIGH"
+          echo "medium-count:     $MEDIUM"
+          echo "low-count:        $LOW"
+          echo "total-count:      $TOTAL"
+          echo "packages-scanned: $PACKAGES"
+          echo "missing-report:   $MISSING"
+          echo "sarif-file:       $SARIF_FILE"
+          echo "sarif-id:         $SARIF_ID"
 
       # Kept when the scan fails the job, so the findings can be inspected.
       - name: Keep the SARIF report
