@@ -1,0 +1,144 @@
+name: 'Scan Ballerina'
+description: 'Sets up Ballerina, runs bal scan on Ballerina packages, uploads the findings to GitHub code scanning and fails on a severity threshold'
+branding:
+  icon: 'shield'
+  color: 'green'
+inputs:
+  setup-ballerina:
+    description: Install Ballerina with ballerina-platform/setup-ballerina. Set to false when an earlier step already installed it
+    required: false
+    default: 'true'
+  ballerina-version:
+    description: Ballerina version to install, such as 2201.13.3 or latest. Used only when setup-ballerina is true
+    required: false
+    default: latest
+  tool-version:
+    description: bal scan tool version to use; empty picks the latest one compatible with the installed distribution
+    required: false
+    default: ''
+  paths:
+    description: Newline or comma separated paths; each is a Ballerina package or a directory searched for packages. Missing paths are ignored
+    required: false
+    default: ballerina
+  exclude-paths:
+    description: Newline or comma separated globs, relative to the repository root, for packages and files to leave out. A directory excludes everything below it; * stays within one directory and ** crosses directories
+    required: false
+    default: ''
+  exclude-tests:
+    description: Drop findings in the packages' test sources (tests/ and modules/*/tests/)
+    required: false
+    default: 'true'
+  scan-args:
+    description: Extra arguments for bal scan, such as --include-rules or --exclude-rules. The action always passes --format=sarif
+    required: false
+    default: ''
+  fail-on-severity:
+    description: "Fail when findings are at or above this severity: none, low, medium or high"
+    required: false
+    default: none
+  max-findings:
+    description: Number of findings at or above fail-on-severity allowed before the job fails
+    required: false
+    default: '0'
+  fail-on-missing-report:
+    description: Fail when bal scan does not produce a report for a package, for example because it does not compile
+    required: false
+    default: 'true'
+  only-new-issues:
+    description: On pull requests, count only findings in the files the pull request changes. The uploaded SARIF still holds every finding. Needs pull-requests read permission
+    required: false
+    default: 'false'
+  upload:
+    description: Upload the findings to GitHub code scanning
+    required: false
+    default: 'true'
+  category:
+    description: Code scanning category the findings are uploaded under
+    required: false
+    default: bal-scan
+  annotations:
+    description: Show each counted finding as an annotation on the file and line
+    required: false
+    default: 'false'
+  job-summary:
+    description: Write the result, severity counts and findings to the job summary
+    required: false
+    default: 'true'
+  github-token:
+    description: Token used to install Ballerina, list pull request files and upload the SARIF
+    required: false
+    default: ${{ github.token }}
+outputs:
+  result:
+    description: "passed, failed, or skipped when no package was found"
+    value: ${{ steps.scan.outputs.result }}
+  sarif-file:
+    description: The merged SARIF file; empty when no report was produced
+    value: ${{ steps.scan.outputs.sarif-file }}
+  sarif-id:
+    description: ID of the uploaded SARIF; empty when it was not uploaded
+    value: ${{ steps.upload.outputs.sarif-id }}
+  high-count:
+    description: Number of counted high severity findings
+    value: ${{ steps.scan.outputs.high-count }}
+  medium-count:
+    description: Number of counted medium severity findings
+    value: ${{ steps.scan.outputs.medium-count }}
+  low-count:
+    description: Number of counted low severity findings
+    value: ${{ steps.scan.outputs.low-count }}
+  total-count:
+    description: Number of counted findings at any severity
+    value: ${{ steps.scan.outputs.total-count }}
+  packages-scanned:
+    description: Number of Ballerina packages scanned
+    value: ${{ steps.scan.outputs.packages-scanned }}
+  missing-report:
+    description: true when bal scan did not produce a report for at least one package
+    value: ${{ steps.scan.outputs.missing-report }}
+runs:
+  using: composite
+  steps:
+    - if: inputs.setup-ballerina == 'true'
+      uses: ballerina-platform/setup-ballerina@v1.1.4
+      with:
+        version: ${{ inputs.ballerina-version }}
+        github-token: ${{ inputs.github-token }}
+
+    - id: scan
+      shell: bash
+      env:
+        SCAN_PATHS: ${{ inputs.paths }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
+        SCAN_ARGS: ${{ inputs.scan-args }}
+        CATEGORY: ${{ inputs.category }}
+        FAIL_ON: ${{ inputs.fail-on-severity }}
+        MAX_FINDINGS: ${{ inputs.max-findings }}
+        FAIL_ON_MISSING: ${{ inputs.fail-on-missing-report }}
+        ONLY_NEW: ${{ inputs.only-new-issues }}
+        ANNOTATIONS: ${{ inputs.annotations }}
+        JOB_SUMMARY: ${{ inputs.job-summary }}
+        TOOL_VERSION: ${{ inputs.tool-version }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/scan.sh"
+
+    # Runs before the gate so the findings reach code scanning even when the job fails.
+    - id: upload
+      if: inputs.upload == 'true' && steps.scan.outputs.sarif-file != ''
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        category: ${{ inputs.category }}
+        token: ${{ inputs.github-token }}
+
+    - if: steps.scan.outputs.result == 'failed'
+      shell: bash
+      env:
+        REASON: ${{ steps.scan.outputs.failure-reason }}
+      run: |
+        echo "::error::$REASON"
+        exit 1
